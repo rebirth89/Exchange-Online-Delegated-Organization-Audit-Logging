@@ -1,0 +1,51 @@
+# Get credentials for connecting to exchange online
+$Creds = Get-Credential
+
+# Connects to Microsoft service / Azure AD to get all tenants
+Connect-MsolService
+$customers = Get-MsolPartnerContract -All
+Write-Host "Found $($customers.Count) customers for this partner."
+
+Import-Module ExchangeOnlineManagement
+# Array used for keeping track of tenants we do not have access to or subscription lapsed
+$ErrorMessageLogArray = @()
+# Array used for audit status of tenant
+$AuditEnabled = @()
+# Loops through tenants and connects to Exchange Online with Modern Auth
+foreach ($customer in $customers) {
+    try{
+        $InitalizeDomain = (Get-MsolDomain -TenantId $customer.TenantID | Where-Object {$_.isInitial}).name
+        Write-Host "$($InitalizeDomain)"
+        Write-Host "Checking Auditing for $($Customer.Name)"
+    
+        Connect-ExchangeOnline -UserPrincipalName $Creds.UserName -ShowProgress $true -DelegatedOrganization $InitalizeDomain -ShowBanner:$false
+        Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true
+        Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue
+    }
+    catch {
+        # Add to array if we do not have permission for tenant or subscription has lapsed
+        $message = $_
+        Write-Warning "$message"
+        $ErrorMessageLogArray = $ErrorMessageLogArray + $message
+    }
+}
+
+# Used for displaying folder browser to choose file path for logging
+# https://powershellone.wordpress.com/2016/05/06/powershell-tricks-open-a-dialog-as-topmost-window/
+Add-Type -AssemblyName System.Windows.Forms
+$FolderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
+$FolderBrowser.Description = 'Select the folder to save logging'
+$result = $FolderBrowser.ShowDialog((New-Object System.Windows.Forms.Form -Property @{TopMost = $true }))
+if ($result -eq [Windows.Forms.DialogResult]::OK){
+    $SelectedFilePathErrorLogging = $FolderBrowser.SelectedPath + "\AuditStatusErrors.txt"
+    $SelectedFilePathAuditLoggingStatus = $FolderBrowser.SelectedPath + "\AuditStatus.txt"
+}
+
+# Writes to file the tenants that we do not have access to or subscription lapsed
+for ($i = 0; $i -lt $ErrorMessageLogArray.Length; $i++) {
+    $ErrorMessageLogArray[$i] | Out-File -Append -FilePath $SelectedFilePathErrorLogging
+}
+# Writes to file tenants audit status
+for ($i = 0; $i -lt $AuditEnabled.Length; $i++) {
+    $AuditEnabled[$i] | Out-File -Append -FilePath $SelectedFilePathAuditLoggingStatus
+}
